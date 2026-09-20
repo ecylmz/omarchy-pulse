@@ -470,9 +470,15 @@ Response:
   "world": 2841,
   "country": 143,
   "subdivision": 16,
+  "subdivision_code": "TR-55",
   "next": 60
 }
 ```
+
+`subdivision_code` echoes the subdivision actually counted, and is empty when
+the server did not recognise the one sent. Without it, a client carrying an
+older catalog would render its own area as a permanent `0` rather than falling
+back to country scope.
 
 The heartbeat **returns the counts**. The bar needs no separate poll: one
 request per 60 seconds does both jobs, halving traffic against the v1 design
@@ -503,6 +509,9 @@ with `Cache-Control: max-age=300` plus `ETag`.
 ```
 
 Peaks ride along in the same response rather than in a separate endpoint.
+`today_peak`, `today_low` and `week_peak` are rolling 24-hour and 7-day
+windows, not calendar days: the server holds no timezone for anyone, because
+it knows nothing about anyone.
 
 ---
 
@@ -536,16 +545,20 @@ produce.
 
 ```sql
 CREATE TABLE presence_history (
-    ts     INTEGER NOT NULL,
     scope  TEXT    NOT NULL,   -- world | country | subdivision
     code   TEXT    NOT NULL,   -- WORLD | TR | TR-55
+    ts     INTEGER NOT NULL,
     online INTEGER NOT NULL,
     active INTEGER NOT NULL DEFAULT 0,
     focus  INTEGER NOT NULL DEFAULT 0,
     away   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (ts, scope, code)
+    PRIMARY KEY (scope, code, ts)
 ) WITHOUT ROWID;
 ```
+
+The key leads with `(scope, code)` so that reading one scope's series is a
+single range scan of the primary key, which is the only read shape the product
+has. No secondary index is needed.
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -575,11 +588,25 @@ a problem, which at this scale it will not.
 ## 16.1 Deployment
 
 ```text
-pulse         single Go binary
+pulse            single Go binary, scratch image, uid 32767
 /data/pulse.db   persistent volume
 reverse proxy    trusted-proxy list configured (§5.3), IP logging off
                  or anonymized
 ```
+
+The deployed chain is Cloudflare → nginx → container:
+
+* nginx carries `set_real_ip_from` for Cloudflare's published ranges plus
+  `real_ip_header CF-Connecting-IP`, so `$remote_addr` becomes the true client
+  and a `CF-Connecting-IP` from any other source is ignored.
+* nginx then sets `X-Forwarded-For` to exactly `$remote_addr`, replacing
+  whatever the client sent rather than appending to it.
+* The server trusts only the proxy's own CIDR and reads the rightmost
+  `X-Forwarded-For` entry, so it stays correct under either nginx convention.
+
+Regenerate the Cloudflare ranges with `tools/gen-cloudflare-nginx.sh` when they
+change. A stale list degrades a whole edge into one presence; it never grants
+anyone a forged one.
 
 If a CDN or proxy provider is used, the documentation must state plainly that
 the infrastructure provider sees source IPs as part of normal network

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "ecylmz.omarchy-pulse",
+  "name": "Omarchy Pulse",
+  "version": "0.1.0",
+  "author": "Emre Can Yılmaz",
+  "license": "MIT",
+  "description": "Ambient presence for Omarchy: how many of us are here right now, by area, country and world. No account, no profiles, no chat.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarchy Pulse",
+    "description": "Show how many Omarchy systems are active right now in your area, your country, or the world.",
+    "category": "Community",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
