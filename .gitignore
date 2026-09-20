@@ -1,0 +1,5 @@
+/server/pulse
+*.db
+*.db-wal
+*.db-shm
+/server/server
