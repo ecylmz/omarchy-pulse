@@ -205,7 +205,7 @@ trust a forwarded header without a trusted-proxy list.
 | Control | Behavior |
 |---|---|
 | **Presence key** (§5) | One IP prefix contributes at most one presence to at most one scope. Addresses T1, T2, partly T3. |
-| **Heartbeat rate limit** | Max one accepted heartbeat per key per 30s. Excess → `429` with `Retry-After`. Addresses T6. |
+| **Heartbeat rate limit** | Max one accepted heartbeat per key per 5s. Excess → `429` with `Retry-After`. Addresses T6 only: because a key is derived from the address, beating more often cannot produce more presences, so the limit is deliberately loose enough not to punish a user changing their location. |
 | **Country validation** | `country` must exist in the embedded catalog, else `400`. Addresses T4. |
 | **Subdivision validation** | Unknown but well-formed subdivision → counted at world and country scope only, never `400`. Keeps stale clients working (§9.4). Addresses T4. |
 | **Scope closure** | Counts exist only for catalog entries. No client input creates a scope. |
@@ -489,7 +489,14 @@ server widen the interval under load or attack without a client release. The
 client clamps it to `[30, 600]`.
 
 Errors: `400` invalid country · `429` rate limited, honor `Retry-After` ·
-`503` at capacity. Every error leaves the bar in the `◌` state, silently.
+`503` at capacity.
+
+A `429` is not a failure: it means the previous beat is still within its TTL
+and this machine is counted, so the client keeps its last counts and stays in
+the `live` state. Only a genuine transport failure, or a response the client
+cannot make sense of, puts the bar into `◌`. The client therefore reads the
+status code rather than relying on `curl -f`, which cannot tell the two
+apart.
 
 ## 14.2 History
 

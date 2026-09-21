@@ -16,6 +16,7 @@ Item {
   property var counts: ({ world: 0, country: 0, subdivision: 0 })
   property string servedSubdivision: ""
   property bool connected: false
+  property bool hasCounts: false
   property int failures: 0
 
   property var history: null
@@ -25,7 +26,9 @@ Item {
   readonly property bool sharing: settings.enabled && !settings.paused && configured
   readonly property string state: !settings.enabled || !configured ? "setup"
     : settings.paused ? "paused"
-    : connected ? "live" : "offline"
+    : connected && hasCounts ? "live"
+    : failures === 0 ? "connecting"
+    : "offline"
 
   // The server dropped the subdivision this client asked for, which means the
   // catalog shipped with this plugin is older than the server's.
@@ -33,21 +36,26 @@ Item {
     && connected && servedSubdivision === ""
 
   function save(patch) {
+    var before = settings
     var next = Model.parseSettings(JSON.stringify(Object.assign({}, settings, patch)))
     settings = next
     settingsFile.setText(Model.serializeSettings(next))
-    if (sharing) beatNow()
-    else {
+
+    if (!sharing) {
       // Nothing to tell the server: the presence simply expires (SPEC §13.3).
       connected = false
+      hasCounts = false
       counts = { world: 0, country: 0, subdivision: 0 }
+    } else if (Model.presenceChanged(before, next)) {
+      beatNow()
     }
   }
 
   function beatNow() {
     if (!sharing || beatProc.running) return
     beatProc.command = [
-      "curl", "-fsS", "--max-time", "8",
+      "curl", "-sS", "--max-time", "8",
+      "-w", "\n%{http_code}",
       "-X", "POST",
       "-H", "content-type: application/json",
       "-d", Model.heartbeatBody(settings.country, settings.subdivision),
@@ -71,26 +79,32 @@ Item {
   }
 
   function onBeat(raw) {
-    var parsed = null
-    try {
-      parsed = JSON.parse(String(raw || "").trim())
-    } catch (e) {
-      onBeatFailed()
+    var result = Model.parseHeartbeat(raw)
+
+    if (result.status === 200) {
+      counts = result.counts
+      servedSubdivision = result.subdivisionCode
+      connected = true
+      hasCounts = true
+      failures = 0
+      beatTimer.interval = Model.nextInterval(result.next, 0) * 1000
       return
     }
-    if (!parsed || typeof parsed.world !== "number") {
-      onBeatFailed()
+    if (result.status === 429) {
+      // The previous beat is still within its TTL, so this machine is counted
+      // and the last counts are current. Nothing is wrong.
+      if (hasCounts) {
+        connected = true
+        failures = 0
+        return
+      }
+      // But a rate limit hit before the first count — a restart moments after
+      // another beat from this address — has no last counts to keep, and
+      // reporting a confident zero is worse than waiting a few seconds.
+      retryTimer.restart()
       return
     }
-    counts = {
-      world: parsed.world,
-      country: parsed.country,
-      subdivision: parsed.subdivision
-    }
-    servedSubdivision = String(parsed.subdivision_code || "")
-    connected = true
-    failures = 0
-    beatTimer.interval = Model.nextInterval(parsed.next, 0) * 1000
+    onBeatFailed()
   }
 
   // A failed heartbeat is never surfaced as an error: the bar dims and the
@@ -106,9 +120,6 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onBeat(text)
-    }
-    onExited: function (code) {
-      if (code !== 0) root.onBeatFailed()
     }
   }
 
@@ -128,6 +139,12 @@ Item {
         }
       }
     }
+  }
+
+  Timer {
+    id: retryTimer
+    interval: 6000
+    onTriggered: root.beatNow()
   }
 
   Timer {

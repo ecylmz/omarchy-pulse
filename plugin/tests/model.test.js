@@ -113,6 +113,57 @@ const catalog = JSON.parse(fs.readFileSync('locations.json', 'utf8'));
   assert.strictEqual(M.locationLabel(catalog, '', ''), 'Not set');
 }
 
+// The bar must never sit on a scope the user is not sharing: country-only
+// sharing with the default "subdivision" scope showed a permanent 0.
+{
+  const countryOnly = { country: 'TR', subdivision: '', bar_scope: 'subdivision' };
+  assert.strictEqual(M.effectiveScope(countryOnly), 'country');
+  assert.strictEqual(M.scopeCount({ world: 5, country: 1, subdivision: 0 },
+                                  M.effectiveScope(countryOnly)), 1);
+
+  // A stored preference is honoured as soon as it becomes shareable.
+  assert.strictEqual(M.effectiveScope({ country: 'TR', subdivision: 'TR-55', bar_scope: 'subdivision' }), 'subdivision');
+  // Nothing configured at all still resolves to something countable.
+  assert.strictEqual(M.effectiveScope({ country: '', subdivision: '', bar_scope: 'country' }), 'world');
+  assert.strictEqual(M.effectiveScope({ country: '', subdivision: '', bar_scope: 'subdivision' }), 'world');
+  // Explicit choices are left alone.
+  assert.strictEqual(M.effectiveScope({ country: 'TR', subdivision: 'TR-55', bar_scope: 'world' }), 'world');
+  assert.strictEqual(M.effectiveScope(null), 'world');
+}
+
+// A 429 means "already counted", not "server unreachable". Conflating the
+// two made the bar report a lost connection whenever a preference was
+// toggled twice in quick succession.
+{
+  const ok = M.parseHeartbeat('{"world":3,"country":2,"subdivision":1,"subdivision_code":"TR-55","next":60}\n200');
+  assert.strictEqual(ok.status, 200);
+  assert.strictEqual(ok.counts.world, 3);
+  assert.strictEqual(ok.subdivisionCode, 'TR-55');
+  assert.strictEqual(ok.next, 60);
+
+  assert.strictEqual(M.parseHeartbeat('too many heartbeats\n\n429').status, 429);
+  assert.strictEqual(M.parseHeartbeat('unknown country\n\n400').status, 400);
+  assert.strictEqual(M.parseHeartbeat('at capacity\n\n503').status, 503);
+  // curl reports a network failure as 000, and anything unparseable is a
+  // failure rather than a silently zeroed count.
+  assert.strictEqual(M.parseHeartbeat('\n000').status, 0);
+  assert.strictEqual(M.parseHeartbeat('').status, 0);
+  assert.strictEqual(M.parseHeartbeat(null).status, 0);
+  assert.strictEqual(M.parseHeartbeat('garbage\n200').status, 0);
+  assert.strictEqual(M.parseHeartbeat('{"next":60}\n200').status, 0, 'a body without counts is not success');
+}
+
+// Display preferences must not cost a heartbeat.
+{
+  const base = { enabled: true, paused: false, country: 'TR', subdivision: 'TR-55' };
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { bar_scope: 'world' })), false);
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { bar_style: 'pulse-prefix' })), false);
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { subdivision: '' })), true);
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { country: 'DE' })), true);
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { paused: true })), true);
+  assert.strictEqual(M.presenceChanged(base, Object.assign({}, base, { enabled: false })), true);
+}
+
 // The payload carries a location and nothing else (SPEC §14.1).
 {
   assert.strictEqual(M.heartbeatBody('TR', 'TR-55'), '{"country":"TR","subdivision":"TR-55"}');

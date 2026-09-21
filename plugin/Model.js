@@ -80,6 +80,18 @@ function barText(style, count, state) {
     : "◉ " + formatCount(count)
 }
 
+// The stored bar_scope is a preference, not a fact: a country-only user has
+// no subdivision, so a stored "subdivision" would leave the bar on a scope
+// that can never have a count. Resolve it at display time rather than
+// rewriting the preference, so picking an area later still honours it.
+function effectiveScope(settings) {
+  var s = settings || defaults()
+  var scope = oneOf(s.bar_scope, BAR_SCOPES, "subdivision")
+  if (scope === "subdivision" && !s.subdivision) scope = "country"
+  if (scope === "country" && !s.country) scope = "world"
+  return scope
+}
+
 function scopeCount(counts, scope) {
   if (!counts) return 0
   switch (oneOf(scope, BAR_SCOPES, "subdivision")) {
@@ -163,6 +175,45 @@ function locationLabel(catalog, countryCode, subdivisionCode) {
   var name = countryName(catalog, countryCode)
   if (!subdivisionCode) return name
   return name + " → " + subdivisionName(catalog, countryCode, subdivisionCode)
+}
+
+// curl is asked to print the status code on a line of its own instead of
+// being run with -f, so that a 429 — a healthy "you are already counted" —
+// is not indistinguishable from an unreachable server.
+function parseHeartbeat(raw) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  var cut = text.lastIndexOf("\n")
+  var status = parseInt(cut < 0 ? text : text.slice(cut + 1), 10)
+  if (!isFinite(status) || status === 0) return { status: 0 }
+  if (status !== 200) return { status: status }
+
+  var parsed = null
+  try {
+    parsed = JSON.parse(text.slice(0, cut).trim())
+  } catch (e) {
+    return { status: 0 }
+  }
+  if (!parsed || typeof parsed.world !== "number") return { status: 0 }
+  return {
+    status: 200,
+    counts: {
+      world: parsed.world,
+      country: parsed.country,
+      subdivision: parsed.subdivision
+    },
+    subdivisionCode: String(parsed.subdivision_code || ""),
+    next: parsed.next
+  }
+}
+
+// Only these fields change what the server counts. bar_scope and bar_style are
+// display preferences, and beating for them spent the server's rate limit and
+// then reported the resulting 429 as a lost connection.
+function presenceChanged(before, after) {
+  var a = before || defaults()
+  var b = after || defaults()
+  return a.country !== b.country || a.subdivision !== b.subdivision
+    || a.enabled !== b.enabled || a.paused !== b.paused
 }
 
 function heartbeatBody(country, subdivision) {

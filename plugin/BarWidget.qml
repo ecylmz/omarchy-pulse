@@ -46,16 +46,17 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: Model.barText(root.pulseSettings.bar_style,
-                        Model.scopeCount(root.pulseCounts, root.pulseSettings.bar_scope),
+                        Model.scopeCount(root.pulseCounts, Model.effectiveScope(root.pulseSettings)),
                         root.pulseState)
     tooltipText: {
       switch (root.pulseState) {
       case "setup": return "Omarchy Pulse — not set up yet"
       case "paused": return "Omarchy Pulse — paused"
+      case "connecting": return "Omarchy Pulse — connecting…"
       case "offline": return "Omarchy Pulse — can't reach the server"
       }
       return "Omarchy Pulse — " + Model.presenceLabel(
-        Model.scopeCount(root.pulseCounts, root.pulseSettings.bar_scope))
+        Model.scopeCount(root.pulseCounts, Model.effectiveScope(root.pulseSettings)))
     }
     onPressed: function (buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()

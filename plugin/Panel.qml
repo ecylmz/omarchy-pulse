@@ -42,7 +42,7 @@ Panel {
     : ""
 
   function open() {
-    if (svc.configured) svc.refreshHistory(svc.settings.bar_scope, historyCode(svc.settings.bar_scope))
+    if (svc.configured) svc.refreshHistory(shownScope, historyCode(shownScope))
     root.controller.show()
   }
 
@@ -51,19 +51,14 @@ Panel {
     root.controller.hide()
   }
 
+  readonly property string shownScope: Model.effectiveScope(svc.settings)
+
   function historyCode(scope) {
     switch (scope) {
     case "world": return "WORLD"
     case "country": return svc.settings.country
-    default: return svc.settings.subdivision || svc.settings.country
+    default: return svc.settings.subdivision
     }
-  }
-
-  function historyScope() {
-    // Fall back to country when the user shares at country granularity, so
-    // the graph is never empty just because there is no subdivision.
-    if (svc.settings.bar_scope === "subdivision" && !svc.settings.subdivision) return "country"
-    return svc.settings.bar_scope
   }
 
   function beginEditingLocation() {
@@ -76,7 +71,7 @@ Panel {
     if (!draftCountry) return
     svc.save({ country: draftCountry, subdivision: draftSubdivision, paused: false })
     editingLocation = false
-    svc.refreshHistory(historyScope(), historyCode(svc.settings.bar_scope))
+    svc.refreshHistory(shownScope, historyCode(shownScope))
   }
 
   Service { id: svc }
@@ -85,7 +80,7 @@ Panel {
     target: svc
     function onSettingsChanged() {
       if (root.opened && svc.configured)
-        svc.refreshHistory(root.historyScope(), root.historyCode(svc.settings.bar_scope))
+        svc.refreshHistory(root.shownScope, root.historyCode(root.shownScope))
     }
   }
 
@@ -259,23 +254,23 @@ Panel {
                 visible: root.subdivisionLabel !== ""
                 label: root.subdivisionLabel
                 value: svc.counts.subdivision
-                emphasised: svc.settings.bar_scope === "subdivision"
+                emphasised: root.shownScope === "subdivision"
               }
               PulseCountRow {
                 label: Model.countryName(svc.catalog, svc.settings.country)
                 value: svc.counts.country
-                emphasised: svc.settings.bar_scope === "country"
+                emphasised: root.shownScope === "country"
               }
               PulseCountRow {
                 label: "World"
                 value: svc.counts.world
-                emphasised: svc.settings.bar_scope === "world"
+                emphasised: root.shownScope === "world"
               }
             }
 
             PulseBody {
               Layout.topMargin: Style.spacing.xs
-              text: Model.presenceLabel(Model.scopeCount(svc.counts, svc.settings.bar_scope))
+              text: Model.presenceLabel(Model.scopeCount(svc.counts, root.shownScope))
             }
 
             PulseCaption {
@@ -355,14 +350,14 @@ Panel {
                 delegate: Button {
                   required property string modelData
                   text: modelData === "subdivision" ? "area" : modelData
-                  selected: svc.settings.bar_scope === modelData
+                  selected: root.shownScope === modelData
                   enabled: modelData !== "subdivision" || svc.settings.subdivision !== ""
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   onClicked: {
                     svc.save({ bar_scope: modelData })
-                    svc.refreshHistory(root.historyScope(), root.historyCode(modelData))
+                    svc.refreshHistory(root.shownScope, root.historyCode(root.shownScope))
                   }
                 }
               }
