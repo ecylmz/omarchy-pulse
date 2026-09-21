@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -156,12 +157,19 @@ func newTestServer(t *testing.T) *server {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	cfg := config{minBeat: 30 * time.Second, anomalyFloor: 20, anomalyFactor: 5}
+	cfg := config{
+		minBeat:       5 * time.Second,
+		anomalyFloor:  20,
+		anomalyFactor: 5,
+		historyTTL:    30 * time.Second,
+		historyMax:    64,
+	}
 	return &server{
 		cfg:      cfg,
 		catalog:  cat,
 		store:    st,
 		presence: newPresence([]byte("test-secret"), 180*time.Second, cfg.minBeat, 1000, 56),
+		history:  newHistoryCache(cfg.historyTTL, cfg.historyMax),
 		nextBeat: 60,
 	}
 }
@@ -422,5 +430,63 @@ func TestConcurrentBeatsKeepCountersHonest(t *testing.T) {
 	if len(p.byCountry) != len(byCountry) || len(p.bySub) != len(bySub) {
 		t.Fatalf("stale zero counters: country %d/%d sub %d/%d",
 			len(p.byCountry), len(byCountry), len(p.bySub), len(bySub))
+	}
+}
+
+// The history endpoint is the cheapest thing to flood — a range scan plus an
+// aggregate, on a deliberately single SQLite connection — so repeated reads
+// must not reach the database. Proven by changing the stored data underneath a
+// live cache entry and asserting the response does not move.
+func TestHistoryIsServedFromCache(t *testing.T) {
+	s := newTestServer(t)
+	ts := time.Now().Unix()
+
+	ask := func() (int, string, string) {
+		r := httptest.NewRequest(http.MethodGet, "/v1/history?scope=country&code=TR", nil)
+		w := httptest.NewRecorder()
+		s.handleHistory(w, r)
+		return w.Code, w.Header().Get("ETag"), w.Body.String()
+	}
+
+	if err := s.store.writeSnapshot(ts, []scopeCount{{Scope: "country", Code: "TR", Online: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	code, etag, first := ask()
+	if code != http.StatusOK || !strings.Contains(first, `"today_peak":3`) {
+		t.Fatalf("first read: code=%d body=%s", code, first)
+	}
+
+	if err := s.store.writeSnapshot(ts+300, []scopeCount{{Scope: "country", Code: "TR", Online: 99}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, cachedEtag, cached := ask(); cached != first || cachedEtag != etag {
+		t.Fatalf("second read hit the database: etag %q->%q", etag, cachedEtag)
+	}
+
+	// An expired entry does go back to the database.
+	s.history = newHistoryCache(0, 64)
+	if _, _, fresh := ask(); !strings.Contains(fresh, `"today_peak":99`) {
+		t.Fatalf("expired cache did not refresh: %s", fresh)
+	}
+
+	// A conditional request against a live cache entry is answered without a
+	// body, so a client that already has the data costs no bandwidth either.
+	s.history = newHistoryCache(time.Minute, 64)
+	s.history.put("country/TR/24h", []byte(first), etag, time.Now())
+	r := httptest.NewRequest(http.MethodGet, "/v1/history?scope=country&code=TR", nil)
+	r.Header.Set("If-None-Match", etag)
+	w := httptest.NewRecorder()
+	s.handleHistory(w, r)
+	if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+		t.Fatalf("conditional request: code=%d bytes=%d", w.Code, w.Body.Len())
+	}
+
+	// The cap bounds a request pattern that walks every scope.
+	capped := newHistoryCache(time.Minute, 4)
+	for i := range 20 {
+		capped.put("k"+strconv.Itoa(i), []byte("x"), "e", time.Now())
+	}
+	if len(capped.entries) > 4 {
+		t.Fatalf("cache grew to %d entries, cap is 4", len(capped.entries))
 	}
 }

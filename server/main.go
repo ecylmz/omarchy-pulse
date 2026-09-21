@@ -35,6 +35,8 @@ type config struct {
 	minBeat       time.Duration
 	snapshotEvery time.Duration
 	sweepEvery    time.Duration
+	historyTTL    time.Duration
+	historyMax    int
 	maxKeys       int
 	v6Bits        int
 	anomalyFloor  int
@@ -67,6 +69,8 @@ func loadConfig() (config, error) {
 		ttl:           envSeconds("PRESENCE_TTL_SECONDS", 180),
 		minBeat:       envSeconds("MIN_BEAT_SECONDS", 5),
 		snapshotEvery: envSeconds("SNAPSHOT_SECONDS", 300),
+		historyTTL:    envSeconds("HISTORY_CACHE_SECONDS", 30),
+		historyMax:    envInt("HISTORY_CACHE_ENTRIES", 4096),
 		sweepEvery:    envSeconds("SWEEP_SECONDS", 5),
 		maxKeys:       envInt("MAX_KEYS", 200_000),
 		v6Bits:        envInt("IPV6_PREFIX_BITS", 56),
@@ -111,6 +115,7 @@ type server struct {
 	catalog  *catalog
 	presence *presence
 	store    *store
+	history  *historyCache
 	nextBeat int
 }
 
@@ -151,6 +156,7 @@ func run() error {
 		catalog:  cat,
 		presence: newPresence(secret, cfg.ttl, cfg.minBeat, cfg.maxKeys, cfg.v6Bits),
 		store:    st,
+		history:  newHistoryCache(cfg.historyTTL, cfg.historyMax),
 		nextBeat: int(cfg.heartbeat.Seconds()),
 	}
 
@@ -309,11 +315,18 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rangeParam := "24h"
 	window := 24 * time.Hour
 	if r.URL.Query().Get("range") == "7d" {
-		window = 7 * 24 * time.Hour
+		rangeParam, window = "7d", 7*24*time.Hour
 	}
 	now := time.Now()
+
+	if entry, ok := s.history.get(scope+"/"+code+"/"+rangeParam, now); ok {
+		s.serveHistory(w, r, entry)
+		return
+	}
+
 	weekStart := now.Add(-7 * 24 * time.Hour).Unix()
 
 	points, err := s.store.points(scope, code, now.Add(-window).Unix())
@@ -345,14 +358,19 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	sum := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(sum[:12]) + `"`
-	w.Header().Set("ETag", etag)
+	s.history.put(scope+"/"+code+"/"+rangeParam, body, etag, now)
+	s.serveHistory(w, r, cachedResponse{body: body, etag: etag})
+}
+
+func (s *server) serveHistory(w http.ResponseWriter, r *http.Request, entry cachedResponse) {
+	w.Header().Set("ETag", entry.etag)
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	if r.Header.Get("If-None-Match") == etag {
+	if r.Header.Get("If-None-Match") == entry.etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
+	w.Write(entry.body)
 }
 
 func (s *server) validScope(scope, code string) bool {
