@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate manifest JSON
+        run: node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("manifest.json","utf8")); const req=["schemaVersion","id","name","version","author","kinds","entryPoints"]; for (const k of req) if (m[k] === undefined) throw new Error(`missing ${k}`); if (m.id.startsWith("omarchy.")) throw new Error("reserved plugin id"); if (!m.entryPoints.barWidget) throw new Error("missing barWidget entry point"); if (!fs.existsSync(m.entryPoints.barWidget)) throw new Error("barWidget entry point not found");'
+
+      - name: Reject repository symlinks
+        run: test -z "$(find . -type l -print -quit)"
+
+      - name: Validate catalog
+        run: node -e 'const c=JSON.parse(require("fs").readFileSync("locations.json","utf8")); if (!Array.isArray(c.countries) || c.countries.length < 200) throw new Error("catalog looks truncated"); if (!c.countries.some(x => x.code === "TR" && x.subdivisions.length === 81)) throw new Error("catalog is not the ISO 3166 build");'
+
+      - name: Validate test harness syntax
+        run: bash -n tests/run.sh
+
+      - name: Run model tests
+        run: tests/run.sh
+
+      # Pulse's whole claim is that the payload carries a hand-picked location
+      # and nothing derived from the machine. These greps are what keep a
+      # future edit from quietly widening it.
+      - name: Keep identity out of the client
+        run: |
+          ! grep -R -nE '\$USER|USERNAME|hostname|whoami|uname|machine-id|/etc/machine|LOGNAME|getenv\("HOME"\)\s*\+\s*"/\.ssh' --include='*.qml' --include='*.js' .
+          ! grep -R -nE 'Quickshell\.env\("(USER|LOGNAME|HOSTNAME|MAIL)"\)' --include='*.qml' --include='*.js' .
+
+      - name: Keep the heartbeat payload minimal
+        run: |
+          node -e '
+            const src = require("fs").readFileSync("Model.js", "utf8");
+            const m = src.match(/function heartbeatBody[\s\S]*?\n}/);
+            if (!m) throw new Error("heartbeatBody not found");
+            const allowed = /^[\s\S]*payload\s*=\s*\{\s*country:\s*country\s*\}[\s\S]*payload\.subdivision\s*=\s*subdivision[\s\S]*$/;
+            if (!allowed.test(m[0])) throw new Error("heartbeat payload gained a field: review it against the README");
+          '
+
+      - name: Reject shell interpolation in processes
+        run: |
+          ! grep -R -nE '"(bash|sh)"\s*,\s*"-c"' --include='*.qml' .

@@ -1,5 +1,1 @@
-/server/pulse
-*.db
-*.db-wal
-*.db-shm
-/server/server
+# Nothing generated lives here; the catalog is committed.
