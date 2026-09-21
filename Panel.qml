@@ -284,10 +284,16 @@ Panel {
             PulseCaption { text: "LAST 24 HOURS" }
 
             Text {
+              id: spark
               Layout.fillWidth: true
               visible: root.hasHistory
+              // One bucket per glyph that fits, so the 24h line spans the panel
+              // instead of stopping wherever a fixed column count happens to end.
+              FontMetrics { id: sparkMetrics; font: spark.font }
+              readonly property real glyph: sparkMetrics.advanceWidth("█")
+              readonly property int columns: glyph > 0 ? Math.floor(width / glyph) : 28
               text: Model.sparkline(root.hasHistory ? svc.history.points : [],
-                                    28, 86400, Math.floor(Date.now() / 1000))
+                                    spark.columns, 86400, Math.floor(Date.now() / 1000))
               color: root.foreground
               opacity: 0.85
               font.family: root.fontFamily
