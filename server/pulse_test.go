@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json/v2"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -315,5 +317,110 @@ func TestSnapshotSkipsEmptyScopes(t *testing.T) {
 	}
 	if len(points) != 1 || points[0][1] != 1 {
 		t.Fatalf("points = %+v", points)
+	}
+}
+
+// One address is one presence holding one location. Answering "can an attacker
+// claim every city at once, or flip between them fast enough to be in two
+// places" structurally rather than by policy: the map key is the identity, the
+// entry holds a single location, and release/claim are paired.
+func TestOnePresenceCannotOccupyTwoScopes(t *testing.T) {
+	p := testPresence(t)
+	key := p.key(netip.MustParseAddr("203.0.113.7"))
+	now := time.Now()
+
+	tour := []struct{ country, sub string }{
+		{"TR", "TR-55"}, {"TR", "TR-34"}, {"TR", "TR-06"},
+		{"US", "US-CA"}, {"DE", "DE-BY"}, {"JP", "JP-13"},
+		{"TR", "TR-55"}, {"TR", ""},
+	}
+
+	for i, stop := range tour {
+		now = now.Add(p.minBeat)
+		got, err := p.beat(key, stop.country, stop.sub, now)
+		if err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+		if got.World != 1 {
+			t.Fatalf("stop %d (%s/%s): world = %d, want 1", i, stop.country, stop.sub, got.World)
+		}
+
+		p.mu.Lock()
+		// Exactly one country and at most one subdivision may be non-zero,
+		// and each at exactly one.
+		if len(p.byCountry) != 1 || p.byCountry[stop.country] != 1 {
+			p.mu.Unlock()
+			t.Fatalf("stop %d: country counters = %v, want only %s=1", i, p.byCountry, stop.country)
+		}
+		wantSubs := 1
+		if stop.sub == "" {
+			wantSubs = 0
+		}
+		if len(p.bySub) != wantSubs || (stop.sub != "" && p.bySub[stop.sub] != 1) {
+			p.mu.Unlock()
+			t.Fatalf("stop %d: subdivision counters = %v, want only %q", i, p.bySub, stop.sub)
+		}
+		p.mu.Unlock()
+	}
+
+	// Flipping faster than the minimum interval does not move the presence at
+	// all, so the previous location keeps the count rather than both holding it.
+	if _, err := p.beat(key, "US", "US-NY", now); !errors.Is(err, errRateLimited) {
+		t.Fatalf("immediate second location change: err = %v, want rate limited", err)
+	}
+	p.mu.Lock()
+	stillThere := len(p.byCountry) == 1 && p.byCountry["TR"] == 1
+	p.mu.Unlock()
+	if !stillThere {
+		t.Fatal("a rate-limited location change disturbed the counters")
+	}
+}
+
+// The whole read-modify-write is under one lock, so concurrent beats from one
+// address cannot both claim before either releases. Worth asserting under
+// -race, since a torn update here would be an inflation bug.
+func TestConcurrentBeatsKeepCountersHonest(t *testing.T) {
+	p := testPresence(t)
+	p.minBeat = 0 // let every concurrent attempt through to the counters
+
+	addrs := make([]netip.Addr, 16)
+	for i := range addrs {
+		addrs[i] = netip.AddrFrom4([4]byte{203, 0, 113, byte(i)})
+	}
+	places := []struct{ country, sub string }{
+		{"TR", "TR-55"}, {"TR", "TR-34"}, {"US", "US-CA"}, {"DE", ""},
+	}
+
+	var wg sync.WaitGroup
+	now := time.Now()
+	for i := range addrs {
+		for round := range 50 {
+			wg.Go(func() {
+				place := places[(i+round)%len(places)]
+				p.beat(p.key(addrs[i]), place.country, place.sub, now)
+			})
+		}
+	}
+	wg.Wait()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	world, byCountry, bySub := recount(p)
+	if p.world != world || p.world != len(addrs) {
+		t.Fatalf("world counter %d, recount %d, distinct addresses %d", p.world, world, len(addrs))
+	}
+	for code, n := range byCountry {
+		if p.byCountry[code] != n {
+			t.Fatalf("country %s counter %d, recount %d", code, p.byCountry[code], n)
+		}
+	}
+	for code, n := range bySub {
+		if p.bySub[code] != n {
+			t.Fatalf("subdivision %s counter %d, recount %d", code, p.bySub[code], n)
+		}
+	}
+	if len(p.byCountry) != len(byCountry) || len(p.bySub) != len(bySub) {
+		t.Fatalf("stale zero counters: country %d/%d sub %d/%d",
+			len(p.byCountry), len(byCountry), len(p.bySub), len(bySub))
 	}
 }

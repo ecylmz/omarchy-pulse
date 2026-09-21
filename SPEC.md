@@ -121,8 +121,62 @@ The damage is *worse* because Pulse deliberately shows small numbers (§8).
 | T6 | Resource exhaustion (unbounded key map, request flood) | Medium |
 | T7 | Deflation (removing others' presence) | Low — not possible; presences are independent |
 | T8 | Individual disclosure via a scope count of 1 | Medium — see §7 |
+| T9 | Claiming many locations, or switching between them rapidly | Low — structurally bounded, see §4.3 |
 
-## 4.3 Explicitly rejected defenses
+## 4.3 One address cannot be in two places
+
+The obvious attack on a location-based counter is to script the endpoint and
+claim every city at once, or to flip between them fast enough to be counted in
+several. Neither works, and not because of a rule: because of the shape of the
+data.
+
+Live presence is `map[presenceKey]entry`, and an `entry` holds exactly **one**
+country and **one** subdivision. The key is the identity (§5), so one address
+owns exactly one entry. A heartbeat that arrives with a different location does
+not add anything — it releases the counters for the old location and claims the
+new one, as a pair, under one lock. The entry is overwritten, never duplicated.
+
+So an address can *move*, arbitrarily and dishonestly, but at any instant it
+contributes exactly `1`, to exactly one subdivision, one country, and the world.
+Being in two cities at once would require two entries, which would require two
+addresses — which is T3, and costs real money.
+
+Verified two ways. Structurally, by two tests: a tour through eight cities
+asserting that after every move exactly one country and at most one subdivision
+hold a count, each at exactly one; and 800 concurrent beats from 16 addresses
+under `-race`, asserting the incremental counters still match a full recount,
+since a torn update here would be an inflation bug. Empirically, against the
+deployed server:
+
+```text
+Samsun                      → world 1, TR 1, TR-55 1
+Istanbul, within 5s         → 429, nothing moved
+Istanbul, after 7s          → world 1, TR 1, TR-34 1
+Tokyo, after 7s             → world 1, JP 1, JP-13 1
+```
+
+World stays at `1` throughout. That is the whole answer.
+
+### What remains, stated plainly
+
+**Location was never a truth claim.** It is selected by hand and Pulse
+deliberately refuses to check it against the network (§2.2, §12). A client
+asserting Tokyo from Samsun is not an attack; it is the documented model. The
+guarantee is *one presence per address*, not *an honest location*.
+
+Given that, rapid switching buys an attacker almost nothing a patient one could
+not get by picking a city and staying there. The one artifact it does leave is
+a trail through history: a client flipping every few seconds appears in
+whichever scope it occupied when each five-minute snapshot fired, so a day of
+it can leave `peak today 1` in a few hundred cities that were in fact empty.
+
+That is capped at `1` per address and is indistinguishable from one real person
+who travels absurdly, so no control is added for it. A location-change rate
+limit was considered and rejected: it would cost code and punish the rare
+honest move, while an attacker who actually wants many cities at once still
+needs many addresses either way.
+
+## 4.4 Explicitly rejected defenses
 
 * **API key or secret shipped in the plugin.** The plugin is open source and
   reads as plain text on every user's disk. Extracted in minutes. Provides no
@@ -132,7 +186,7 @@ The damage is *worse* because Pulse deliberately shows small numbers (§8).
 * **Proof-of-work on the heartbeat.** Costs every honest laptop battery
   forever to inconvenience an attacker for one afternoon.
 
-## 4.4 Residual risk, stated honestly
+## 4.5 Residual risk, stated honestly
 
 Abuse cannot be driven to zero in an anonymous, account-free, open-source
 system. It can be made to **cost real resources**, be **bounded in blast
