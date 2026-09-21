@@ -229,6 +229,39 @@ func TestHeartbeat(t *testing.T) {
 	}
 }
 
+// The trusted-proxy rule is a trust boundary: getting it wrong either
+// collapses every client into one presence or lets anyone mint unlimited ones,
+// so the refusal is worth asserting.
+func TestLoadConfigRefusesUnsafeSetups(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"no trusted proxies and no opt-out", nil, true},
+		{"explicit direct access", map[string]string{"ALLOW_DIRECT": "1"}, false},
+		{"trusted proxy given", map[string]string{"TRUSTED_PROXIES": "172.17.0.0/16"}, false},
+		{"several trusted proxies", map[string]string{"TRUSTED_PROXIES": "172.17.0.0/16, 10.0.0.0/8"}, false},
+		{"not a CIDR", map[string]string{"TRUSTED_PROXIES": "172.17.0.1"}, true},
+		{"garbage CIDR", map[string]string{"TRUSTED_PROXIES": "nonsense"}, true},
+		{"rate limit outlives the presence", map[string]string{
+			"ALLOW_DIRECT": "1", "MIN_BEAT_SECONDS": "300", "PRESENCE_TTL_SECONDS": "180",
+		}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := loadConfig()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("loadConfig() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestHistoryRejectsUnknownScopes(t *testing.T) {
 	s := newTestServer(t)
 

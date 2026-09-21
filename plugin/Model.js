@@ -206,6 +206,85 @@ function parseHeartbeat(raw) {
   }
 }
 
+var MAX_RATE_LIMIT_RETRIES = 5
+
+function heartbeatState() {
+  return {
+    counts: { world: 0, country: 0, subdivision: 0 },
+    servedSubdivision: "",
+    connected: false,
+    hasCounts: false,
+    failures: 0,
+    retries: 0
+  }
+}
+
+// The heartbeat state machine, kept pure so the branch that decides whether a
+// response means "counted", "try again" or "offline" can be tested without a
+// running shell.
+//
+// Returns the next state plus what the caller should do: `retry` to beat again
+// shortly, and `interval` (seconds, 0 = leave it alone) for the regular poll.
+function nextHeartbeatState(prev, result) {
+  var s = prev || heartbeatState()
+  var r = result || { status: 0 }
+
+  if (r.status === 200) {
+    return {
+      state: {
+        counts: r.counts,
+        servedSubdivision: r.subdivisionCode,
+        connected: true,
+        hasCounts: true,
+        failures: 0,
+        retries: 0
+      },
+      retry: false,
+      interval: nextInterval(r.next, 0)
+    }
+  }
+
+  // A 429 means the beat arrived inside the server's minimum interval and was
+  // never evaluated, so nothing it would have reported has changed and the
+  // server is plainly reachable. Retry soon instead of calling it an outage —
+  // but a bounded number of times, so a client that is permanently rate
+  // limited eventually reports itself offline rather than polling forever.
+  if (r.status === 429 && s.retries < MAX_RATE_LIMIT_RETRIES) {
+    return {
+      state: {
+        counts: s.counts,
+        servedSubdivision: s.servedSubdivision,
+        connected: s.connected,
+        hasCounts: s.hasCounts,
+        failures: s.failures,
+        retries: s.retries + 1
+      },
+      retry: true,
+      interval: 0
+    }
+  }
+
+  // Anything else, including a 429 that would not stop: back off. The last
+  // counts are kept for the panel to show, but `connected` goes false so the
+  // bar stops presenting them as current.
+  var failures = s.failures + 1
+  return {
+    state: {
+      counts: s.counts,
+      servedSubdivision: s.servedSubdivision,
+      connected: false,
+      hasCounts: s.hasCounts,
+      failures: failures,
+      // Deliberately not reset: only a beat that lands clears the retry
+      // budget. Resetting here would restart the retry burst on the next
+      // 429 and poll forever in five-request bursts.
+      retries: s.retries
+    },
+    retry: false,
+    interval: nextInterval(60, failures)
+  }
+}
+
 // Only these fields change what the server counts. bar_scope and bar_style are
 // display preferences, and beating for them spent the server's rate limit and
 // then reported the resulting 429 as a lost connection.

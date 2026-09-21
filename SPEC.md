@@ -366,16 +366,28 @@ optional field as absent. A newer server must never break an older plugin.
 
 # 10. Bar Indicator
 
-| State | Display |
-|---|---|
-| Enabled, no location chosen | `◎` — click opens the picker |
-| Normal | `◉ 16` or `P: 16`, per `bar_style` |
-| Paused | `◌` dimmed |
-| Server unreachable | `◌` |
+| State | Display | Tooltip |
+|---|---|---|
+| Enabled, no location chosen | `◎` | not set up yet |
+| Live | `◉ 16` or `P: 16`, per `bar_style` | the presence sentence for the shown scope |
+| No count yet | `◌` | connecting… |
+| Paused | `◌` | paused |
+| Server unreachable | `◌` | can't reach the server |
+
+`◌` means "no number to show" rather than specifically "offline"; the tooltip
+carries the reason. A count is only ever printed when the server has actually
+returned one.
 
 The count shown is the scope in `bar_scope`, which is independent of the
 location being shared. Sharing as `Türkiye → Samsun` while the bar shows
 `World` is valid and expected.
+
+`bar_scope` is a stored *preference*, not a fact about what can be shown. A
+user sharing at country granularity has no subdivision, so a stored
+`subdivision` scope resolves down — subdivision → country → world — to the most
+specific scope actually being shared. The preference is never rewritten, so
+choosing an area later brings it back. Resolving this at display time rather
+than on save is what keeps the bar off a scope that can only ever read `0`.
 
 The bar never prints verbose geography, never emits error text, and never
 blocks bar rendering.
@@ -491,12 +503,29 @@ client clamps it to `[30, 600]`.
 Errors: `400` invalid country · `429` rate limited, honor `Retry-After` ·
 `503` at capacity.
 
-A `429` is not a failure: it means the previous beat is still within its TTL
-and this machine is counted, so the client keeps its last counts and stays in
-the `live` state. Only a genuine transport failure, or a response the client
-cannot make sense of, puts the bar into `◌`. The client therefore reads the
-status code rather than relying on `curl -f`, which cannot tell the two
-apart.
+A `429` is not a failure. It means the beat arrived inside the minimum
+interval and was **not evaluated**, so nothing the server would have reported
+has changed and the server is plainly reachable. The client therefore reads the
+status code rather than relying on `curl -f`, which cannot tell a rate limit
+from an unreachable host, and it retries shortly so the beat actually lands.
+
+Two things follow from "not evaluated", and both were bugs before they were
+rules:
+
+* A `429` carries no counts, so a client that has never had a successful beat
+  has nothing to show. It must not print a confident `0`; it reports
+  `connecting` until a beat lands.
+* Counts belong to the location the server last accepted. When the user
+  changes location, the old counts do not describe the new one, so they are
+  discarded rather than redisplayed under the new label.
+
+Retries are bounded. A client that is permanently rate limited — two machines
+behind one NAT share a presence key, so it can happen — falls back to the
+ordinary failure backoff instead of polling forever, and the retry budget is
+cleared only by a beat that lands.
+
+`MIN_BEAT_SECONDS` must not exceed `PRESENCE_TTL_SECONDS`, or a client could be
+rate limited out of its own presence. The server refuses to start otherwise.
 
 ## 14.2 History
 

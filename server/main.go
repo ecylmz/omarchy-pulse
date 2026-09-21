@@ -65,7 +65,7 @@ func loadConfig() (config, error) {
 		dbPath:        env("DB_PATH", "/data/pulse.db"),
 		heartbeat:     envSeconds("HEARTBEAT_SECONDS", 60),
 		ttl:           envSeconds("PRESENCE_TTL_SECONDS", 180),
-		minBeat:       envSeconds("MIN_BEAT_SECONDS", 30),
+		minBeat:       envSeconds("MIN_BEAT_SECONDS", 5),
 		snapshotEvery: envSeconds("SNAPSHOT_SECONDS", 300),
 		sweepEvery:    envSeconds("SWEEP_SECONDS", 5),
 		maxKeys:       envInt("MAX_KEYS", 200_000),
@@ -84,6 +84,14 @@ func loadConfig() (config, error) {
 			return c, fmt.Errorf("TRUSTED_PROXIES: %q is not a CIDR: %w", raw, err)
 		}
 		c.trusted = append(c.trusted, pfx)
+	}
+
+	// A client rate limited for longer than its own presence lives would be
+	// locked out of being counted at all.
+	if c.minBeat > c.ttl {
+		return c, fmt.Errorf(
+			"MIN_BEAT_SECONDS (%s) exceeds PRESENCE_TTL_SECONDS (%s): clients would be rate limited out of their own presence",
+			c.minBeat, c.ttl)
 	}
 
 	// SPEC §5.3. Behind a proxy with no trusted list, every client would

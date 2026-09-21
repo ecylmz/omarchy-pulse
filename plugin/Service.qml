@@ -18,6 +18,7 @@ Item {
   property bool connected: false
   property bool hasCounts: false
   property int failures: 0
+  property int retries: 0
 
   property var history: null
   property double historyFetchedAt: 0
@@ -46,7 +47,23 @@ Item {
       connected = false
       hasCounts = false
       counts = { world: 0, country: 0, subdivision: 0 }
-    } else if (Model.presenceChanged(before, next)) {
+      servedSubdivision = ""
+      return
+    }
+
+    if (Model.presenceChanged(before, next)) {
+      // The counts describe the location the server last accepted, so they do
+      // not describe this one. Showing them under the new label — or letting
+      // an old empty subdivision echo trip the stale-catalog warning — would
+      // be worse than showing nothing for the second it takes to find out.
+      hasCounts = false
+      counts = { world: 0, country: 0, subdivision: 0 }
+      servedSubdivision = ""
+      retries = 0
+      beatNow()
+    } else if (!connected) {
+      // A preference change is also the user's most natural way of prodding a
+      // plugin that looks stuck, and it costs one request.
       beatNow()
     }
   }
@@ -78,41 +95,28 @@ Item {
     historyProc.running = true
   }
 
-  function onBeat(raw) {
-    var result = Model.parseHeartbeat(raw)
-
-    if (result.status === 200) {
-      counts = result.counts
-      servedSubdivision = result.subdivisionCode
-      connected = true
-      hasCounts = true
-      failures = 0
-      beatTimer.interval = Model.nextInterval(result.next, 0) * 1000
-      return
-    }
-    if (result.status === 429) {
-      // The previous beat is still within its TTL, so this machine is counted
-      // and the last counts are current. Nothing is wrong.
-      if (hasCounts) {
-        connected = true
-        failures = 0
-        return
-      }
-      // But a rate limit hit before the first count — a restart moments after
-      // another beat from this address — has no last counts to keep, and
-      // reporting a confident zero is worse than waiting a few seconds.
-      retryTimer.restart()
-      return
-    }
-    onBeatFailed()
-  }
-
   // A failed heartbeat is never surfaced as an error: the bar dims and the
-  // next tick tries again (SPEC §41).
-  function onBeatFailed() {
-    connected = false
-    failures = failures + 1
-    beatTimer.interval = Model.nextInterval(60, failures) * 1000
+  // next tick tries again (SPEC §41). All of the deciding lives in
+  // Model.nextHeartbeatState so it can be tested.
+  function onBeat(raw) {
+    var step = Model.nextHeartbeatState({
+      counts: counts,
+      servedSubdivision: servedSubdivision,
+      connected: connected,
+      hasCounts: hasCounts,
+      failures: failures,
+      retries: retries
+    }, Model.parseHeartbeat(raw))
+
+    counts = step.state.counts
+    servedSubdivision = step.state.servedSubdivision
+    connected = step.state.connected
+    hasCounts = step.state.hasCounts
+    failures = step.state.failures
+    retries = step.state.retries
+
+    if (step.interval > 0) beatTimer.interval = step.interval * 1000
+    if (step.retry) retryTimer.restart()
   }
 
   Process {

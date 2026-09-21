@@ -153,6 +153,69 @@ const catalog = JSON.parse(fs.readFileSync('locations.json', 'utf8'));
   assert.strictEqual(M.parseHeartbeat('{"next":60}\n200').status, 0, 'a body without counts is not success');
 }
 
+// The state machine that decides "counted" / "try again" / "offline". Three
+// bugs came out of this branch, so it is exercised directly.
+{
+  const ok = { status: 200, counts: { world: 9, country: 4, subdivision: 2 },
+               subdivisionCode: 'TR-55', next: 60 };
+
+  // A landed beat is the only thing that produces counts.
+  let step = M.nextHeartbeatState(M.heartbeatState(), ok);
+  assert.strictEqual(step.state.connected, true);
+  assert.strictEqual(step.state.hasCounts, true);
+  assert.strictEqual(step.state.counts.world, 9);
+  assert.strictEqual(step.interval, 60);
+  assert.strictEqual(step.retry, false);
+
+  // A 429 before any count must not report a confident zero: retry, stay
+  // un-counted, and do not blame the server.
+  step = M.nextHeartbeatState(M.heartbeatState(), { status: 429 });
+  assert.strictEqual(step.retry, true);
+  assert.strictEqual(step.state.hasCounts, false);
+  assert.strictEqual(step.state.connected, false);
+  assert.strictEqual(step.state.failures, 0, '429 is not a failure');
+  assert.strictEqual(step.interval, 0, 'the poll interval is left alone');
+
+  // A 429 with counts in hand keeps them and keeps the bar live, and still
+  // retries so the beat actually lands.
+  const live = M.nextHeartbeatState(M.heartbeatState(), ok).state;
+  step = M.nextHeartbeatState(live, { status: 429 });
+  assert.strictEqual(step.state.connected, true);
+  assert.strictEqual(step.state.counts.world, 9);
+  assert.strictEqual(step.retry, true);
+
+  // Retries are bounded, so a permanently rate-limited client eventually
+  // reports itself offline instead of polling forever.
+  let s = M.heartbeatState();
+  let retried = 0;
+  for (let i = 0; i < 12; i++) {
+    const r = M.nextHeartbeatState(s, { status: 429 });
+    if (r.retry) retried++;
+    s = r.state;
+  }
+  assert.strictEqual(retried, 5, `retried ${retried} times, want 5`);
+  assert.strictEqual(s.connected, false);
+  assert.ok(s.failures > 0, 'gives up into the failure path');
+
+  // A backed-off interval is restored by the next beat that lands, so a
+  // recovered server cannot leave the client polling every ten minutes while
+  // its 180s presence quietly expires.
+  let backed = M.heartbeatState();
+  for (let i = 0; i < 4; i++) backed = M.nextHeartbeatState(backed, { status: 0 }).state;
+  assert.strictEqual(M.nextInterval(60, backed.failures), 600);
+  assert.strictEqual(M.nextHeartbeatState(backed, ok).interval, 60);
+
+  // Transport failure keeps the last counts for the panel but drops the
+  // connection, so the bar stops presenting them as current.
+  step = M.nextHeartbeatState(live, { status: 0 });
+  assert.strictEqual(step.state.connected, false);
+  assert.strictEqual(step.state.counts.world, 9);
+  assert.strictEqual(step.state.failures, 1);
+  assert.strictEqual(step.interval, 120);
+
+  assert.strictEqual(M.nextHeartbeatState(null, null).state.failures, 1);
+}
+
 // Display preferences must not cost a heartbeat.
 {
   const base = { enabled: true, paused: false, country: 'TR', subdivision: 'TR-55' };
