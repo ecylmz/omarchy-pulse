@@ -241,7 +241,7 @@ edge limit bounds how often any address can ask.
 Abuse cannot be driven to zero in an anonymous, account-free, open-source
 system. It can be made to **cost real resources**, be **bounded in blast
 radius**, and be **visible when it happens**. §5, §6 and §16 do those three
-things. An attacker with a genuine botnet can still inflate a scope; §16.3
+things. An attacker with a genuine botnet can still inflate a scope; §16.4
 describes the prepared response and why the data needed for it already exists.
 
 ---
@@ -731,8 +731,8 @@ a problem, which at this scale it will not.
 ```text
 pulse            single Go binary, scratch image, uid 32767
 /data/pulse.db   persistent volume
-reverse proxy    trusted-proxy list configured (§5.3), IP logging off
-                 or anonymized
+reverse proxy    trusted-proxy list configured (§5.3), request logging
+                 off (§16.2)
 ```
 
 The deployed chain is Cloudflare → nginx → container:
@@ -754,7 +754,44 @@ the infrastructure provider sees source IPs as part of normal network
 operation. Pulse's claim is about what Pulse stores, not about what the
 internet is.
 
-## 16.2 Scaling
+## 16.2 Request logging
+
+The privacy statement says an address is never written to a log, so the
+deployment has to actually be that. It was not: the vhost's default
+`access_log` was writing the client address next to `POST /v1/heartbeat` and a
+timestamp on every beat, which is a presence record in all but name.
+
+What it takes, and why each part is not obvious:
+
+* `access_log off;` in the app's server context. `access_log` is **additive** in
+  nginx, so adding an anonymised format alongside the default logs twice rather
+  than replacing it, and `off` is the only thing that cancels the inherited
+  line. `off` also cancels any `access_log` added after it at the same level,
+  so an anonymised log cannot be kept as a consolation prize.
+* `limit_req_log_level info;`. `error_log` has no `off` and is likewise
+  additive, so the vhost's own line at the default `error` level cannot be
+  removed — the level of the *message* has to move below the threshold
+  instead. Without this a rate-limited flood still lands in the error log with
+  an address attached.
+* The `log_format` and `limit_req_zone` live in an http-context file named to
+  sort **before** `dokku.conf`, which is what includes the app vhosts. A
+  `log_format` is resolved while the vhost is parsed, so declaring it later
+  fails the entire configuration with `unknown log format`. A `limit_req` zone
+  resolves after parsing and is not order-sensitive, which is why the rate
+  limit worked from a later-sorting file and the log format did not.
+
+Verified by flooding the deployment — normal traffic plus sixty requests, of
+which thirty-four were rate limited — and then searching every nginx and
+application log for the source address. Both files stayed empty.
+
+The cost is deliberate: a flood now leaves no trace on the host. It is
+affordable because the limit already makes a flood harmless, because the CDN's
+own analytics give volumetric visibility without Pulse storing anything, and
+because an unconditional promise is worth more to this product than an
+attacker's address. Infrastructure providers still see source addresses as part
+of normal network operation, which §16.1 says plainly.
+
+## 16.3 Scaling
 
 Single instance. Horizontal scaling was removed from the spec: it was in v1
 only because Redis made it possible, and it brought a leader-election
@@ -762,7 +799,7 @@ requirement for the SQLite writer with it. One Go process serving a niche
 ecosystem's heartbeats is not the bottleneck anyone will hit. If it ever is,
 §15.1's map is the only thing that needs to move.
 
-## 16.3 Prepared response to distributed abuse
+## 16.4 Prepared response to distributed abuse
 
 Not built in v1, deliberately. Documented so it can be added without touching
 the protocol:
@@ -821,7 +858,7 @@ to look healthier is worth nothing, and `World 3` on launch day is the honest
 answer to the only question Pulse asks. The number grows when people install
 the plugin, and there is no other mechanism by which it is permitted to grow.
 
-The clamp in §16.3 only ever holds a count *below* its true value, never above.
+The clamp in §16.4 only ever holds a count *below* its true value, never above.
 
 ---
 
@@ -848,7 +885,7 @@ The clamp in §16.3 only ever holds a count *below* its true value, never above.
 ## 19.2 Later
 
 Focus/Away states · richer history ranges · Explore mode · 3D globe ·
-localized labels · freeze list and growth clamp (§16.3) · additional
+localized labels · freeze list and growth clamp (§16.4) · additional
 administrative levels, if ever justified.
 
 ## 19.3 Globe — design constraint
