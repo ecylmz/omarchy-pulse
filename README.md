@@ -12,7 +12,7 @@ there. Anyone who wants to actually find the other person uses the
 ## Screenshots
 
 <p align="center">
-  <img src="preview.png" alt="The Omarchy Pulse panel showing area, country and world counts" width="62%">
+  <img src="preview.png?v=2" alt="The Omarchy Pulse panel showing area, country and world counts" width="62%">
 </p>
 
 <p align="center">
