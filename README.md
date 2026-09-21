@@ -9,6 +9,16 @@ user list. It does not connect you to people; it reminds you that they are
 there. Anyone who wants to actually find the other person uses the
 **#OmarchyPulse** hashtag, outside Pulse.
 
+## Screenshots
+
+<p align="center">
+  <img src="preview.png" alt="The Omarchy Pulse panel showing area, country and world counts" width="62%">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/omarchy-pulse-bar.png" alt="The Pulse indicator in the Omarchy bar" width="62%">
+</p>
+
 ## Install
 
 ```sh
