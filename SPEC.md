@@ -118,7 +118,7 @@ The damage is *worse* because Pulse deliberately shows small numbers (§8).
 | T3 | Distributed inflation (botnet / many VPS IPs) | High |
 | T4 | Scope pollution (invented country/subdivision codes) | Medium |
 | T5 | Header spoofing behind a misconfigured proxy | Critical |
-| T6 | Resource exhaustion (unbounded key map, request flood) | Medium |
+| T6 | Resource exhaustion (unbounded key map, request flood) | Medium — see §4.4 |
 | T7 | Deflation (removing others' presence) | Low — not possible; presences are independent |
 | T8 | Individual disclosure via a scope count of 1 | Medium — see §7 |
 | T9 | Claiming many locations, or switching between them rapidly | Low — structurally bounded, see §4.3 |
@@ -176,7 +176,57 @@ limit was considered and rejected: it would cost code and punish the rare
 honest move, while an attacker who actually wants many cities at once still
 needs many addresses either way.
 
-## 4.4 Explicitly rejected defenses
+## 4.4 Flooding the API
+
+Nothing stops someone sending 100 requests a second at a published endpoint,
+so the question is only what that costs the service. Two things had to be
+built, because the first draft of this document promised one of them and the
+deployment did not have it.
+
+**Rate limit at the edge.** nginx carries `limit_req` at 5r/s per address with
+a burst of 20, keyed on `$binary_remote_addr` — which the real-ip
+configuration (§5.3) makes the true client, so the limit holds whether a
+request arrives through the CDN or straight at the origin. A flood is answered
+with `429` by nginx and never reaches Go. 5r/s is absurdly generous for a
+client that beats once a minute, and comfortable even for a large NAT: fifty
+Omarchy users behind one address produce under 1r/s.
+
+This is only safe to set that low because a `429` is handled correctly (§14.1):
+a shared address that does clip the limit retries and keeps its count, rather
+than reporting itself offline.
+
+**Cache the expensive endpoint.** `GET /v1/history` was by a wide margin the
+cheapest thing to flood — a range scan plus an aggregate, against a database
+deliberately held on one connection (§15.2), so concurrent reads serialise.
+Measured on the deployment before the fix: 115ms for one request, 321ms average
+at 20 concurrent. Since the data only changes when a snapshot is written every
+five minutes, each response is now held in memory for 30 seconds. Repeated
+reads never reach SQLite, and the `ETag` stays stable across the window so
+clients that already have the data are answered `304` with no body.
+
+The heartbeat needs no such cache: it is a map lookup under a mutex, and the
+edge limit bounds how often any address can ask.
+
+### What remains
+
+* **A genuinely distributed flood** — thousands of addresses, each politely
+  under 5r/s — still arrives. The history cache absorbs the expensive half;
+  heartbeats contend on the single presence mutex, whose upgrade path is
+  recorded at its declaration. Cloudflare absorbs volumetric attacks, but no
+  application-layer rate limiting rule is configured there.
+* **The origin is directly reachable.** Its address is not secret and no
+  firewall restricts it, so Cloudflare's absorption can be bypassed by anyone
+  who looks it up. The per-address limit still applies, because it lives in
+  nginx rather than at the CDN. Restricting the origin to Cloudflare's ranges
+  was considered and rejected: the host serves several other applications on
+  the same ports that are deliberately reached directly, and a stale range list
+  would take the whole site down rather than degrade it.
+* **Memory is bounded** rather than defended: `MAX_KEYS` caps live presences at
+  200,000 with a `503` beyond it, request bodies are capped at 4 KiB, and the
+  history cache is capped at 4,096 entries against a key space the catalog
+  bounds at roughly 3,800.
+
+## 4.5 Explicitly rejected defenses
 
 * **API key or secret shipped in the plugin.** The plugin is open source and
   reads as plain text on every user's disk. Extracted in minutes. Provides no
@@ -186,7 +236,7 @@ needs many addresses either way.
 * **Proof-of-work on the heartbeat.** Costs every honest laptop battery
   forever to inconvenience an attacker for one afternoon.
 
-## 4.5 Residual risk, stated honestly
+## 4.6 Residual risk, stated honestly
 
 Abuse cannot be driven to zero in an anonymous, account-free, open-source
 system. It can be made to **cost real resources**, be **bounded in blast
@@ -264,7 +314,8 @@ trust a forwarded header without a trusted-proxy list.
 | **Subdivision validation** | Unknown but well-formed subdivision → counted at world and country scope only, never `400`. Keeps stale clients working (§9.4). Addresses T4. |
 | **Scope closure** | Counts exist only for catalog entries. No client input creates a scope. |
 | **Key map bound** | Hard cap on live keys; beyond it, new keys are refused with `503`. Addresses T6. |
-| **Edge rate limit** | Plain per-IP connection limit at the reverse proxy. Addresses T6. |
+| **Edge rate limit** | nginx `limit_req` at 5r/s per address, burst 20, answered with `429`. Stops a flood before it reaches the application at all. Addresses T6. |
+| **History cache** | Each history response is held in memory for 30s, so repeated reads never reach SQLite. Addresses T6. |
 | **Anomaly log** | A scope exceeding `max(20, 5 × its 7-day peak)` logs a warning. No behavior change — this is the signal that T3 is happening. |
 
 The anomaly log is the only piece here whose purpose is future: it costs a few
