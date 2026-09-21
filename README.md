@@ -97,4 +97,4 @@ the count is kept from being forged.
 
 ## License
 
-[MIT](LICENSE) © 2026 Emre Can Yılmaz
+[MIT](LICENSE)
