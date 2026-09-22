@@ -1,1 +1,0 @@
-curl: (63) Exceeded the maximum allowed file size (65536) with 65536 bytes
