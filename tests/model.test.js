@@ -153,6 +153,20 @@ const catalog = JSON.parse(fs.readFileSync('locations.json', 'utf8'));
   assert.strictEqual(M.parseHeartbeat('{"next":60}\n200').status, 0, 'a body without counts is not success');
 }
 
+// curl stops a response at MAX_RESPONSE_BYTES, so whatever arrives at the cap
+// was cut mid-body. Parsing it would let an endpoint that pads a valid answer
+// with an endless tail be believed, so it is rejected before parsing.
+{
+  const valid = '{"world":3,"country":2,"subdivision":1,"next":60}';
+  assert.strictEqual(M.withinLimit(valid + '\n200'), true);
+  assert.strictEqual(M.withinLimit(''), true);
+  assert.strictEqual(M.withinLimit(null), true);
+  assert.strictEqual(M.withinLimit(valid + ' '.repeat(M.MAX_RESPONSE_BYTES)), false);
+  // The padded body is valid JSON, which is exactly why the cap and not the
+  // parser has to be the thing that turns it away.
+  assert.strictEqual(M.parseHeartbeat(valid + ' '.repeat(16) + '\n200').status, 200);
+}
+
 // The state machine that decides "counted" / "try again" / "offline". Three
 // bugs came out of this branch, so it is exercised directly.
 {

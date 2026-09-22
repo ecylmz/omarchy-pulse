@@ -72,6 +72,7 @@ Item {
     if (!sharing || beatProc.running) return
     beatProc.command = [
       "curl", "-sS", "--max-time", "8",
+      "--max-filesize", String(Model.MAX_RESPONSE_BYTES),
       "-w", "\n%{http_code}",
       "-X", "POST",
       "-H", "content-type: application/json",
@@ -90,6 +91,7 @@ Item {
 
     historyProc.command = [
       "curl", "-fsS", "--max-time", "8",
+      "--max-filesize", String(Model.MAX_RESPONSE_BYTES),
       root.apiBase + "/v1/history?scope=" + encodeURIComponent(scope) + "&code=" + encodeURIComponent(code)
     ]
     historyProc.running = true
@@ -123,7 +125,9 @@ Item {
     id: beatProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onBeat(text)
+      // A response that hit the size cap is truncated, so it is handed on as
+      // no answer at all: the state machine counts a failure and retries.
+      onStreamFinished: root.onBeat(Model.withinLimit(text) ? text : "")
     }
   }
 
@@ -132,6 +136,7 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (!Model.withinLimit(text)) return
         try {
           var parsed = JSON.parse(String(text || "").trim())
           if (parsed && parsed.points) {

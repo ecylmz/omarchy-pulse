@@ -177,6 +177,16 @@ function locationLabel(catalog, countryCode, subdivisionCode) {
   return name + " → " + subdivisionName(catalog, countryCode, subdivisionCode)
 }
 
+// curl is told to stop the transfer once a response reaches this many bytes,
+// so an endpoint that answers with an endless body cannot grow the shell out
+// of memory. A response that reaches the cap was cut mid-flight and is never
+// parsed — the heartbeat treats it as a failed one and tries again.
+var MAX_RESPONSE_BYTES = 65536
+
+function withinLimit(raw) {
+  return String(raw === undefined || raw === null ? "" : raw).length < MAX_RESPONSE_BYTES
+}
+
 // curl is asked to print the status code on a line of its own instead of
 // being run with -f, so that a 429 — a healthy "you are already counted" —
 // is not indistinguishable from an unreachable server.
